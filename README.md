@@ -39,9 +39,10 @@ pip install -e .
 
 ## Limitations:
 
-This is a demo compiler, not a full Python implementation.
+This is a demo transpiler, not a full Python implementation.
 Currently unsupported:
 Generators (yield)
 Async / await
 Closures & cell variables
 Full standard library
+
