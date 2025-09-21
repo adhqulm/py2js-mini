@@ -1,0 +1,3 @@
+paint red 1 1 {}
+paint blue 3 {height: 5} {}
+paint green 2 {tag: ui, alpha: 0.5} {}

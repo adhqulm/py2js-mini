@@ -1,0 +1,1 @@
+print(True, False, None, [1, 2, True], {"x": False})

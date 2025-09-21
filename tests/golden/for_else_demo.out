@@ -1,0 +1,7 @@
+loop 0
+loop 1
+loop 2
+w 0
+w 1
+w 2
+for-else ran

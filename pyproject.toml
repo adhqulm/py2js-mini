@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py2js-mini"
+version = "0.1.0"
+description = "Tiny Python->JS transpiler for demos"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.11"
+authors = [{ name = "Kristina" }]
+license = { text = "MIT" }
+keywords = ["python", "javascript", "transpiler", "compiler", "demo"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: JavaScript",
+  "Topic :: Software Development :: Compilers",
+  "Topic :: Software Development :: Code Generators"
+]
+
+[project.urls]
+Homepage = "https://github.com/adhqulm/py2js-mini"
+Issues = "https://github.com/adhqulm/py2js-mini/issues"
+
+[project.scripts]
+py2js = "py2js.cli:main"
+
+[tool.setuptools]
+packages = ["py2js"]
+include-package-data = true

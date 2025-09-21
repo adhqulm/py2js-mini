@@ -1,0 +1,4 @@
+5
+caught ValueError: division by zero
+finally runs
+key error ok
