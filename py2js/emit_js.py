@@ -1,11 +1,8 @@
-# flake8: noqa
-# mypy: ignore-errors
-
 from typing import List
 from .ir import (
     Module, Stmt, Expr,
     Assign, AssignAttr, UnpackAssign, ImportFrom, ExprStmt, If, For, While, Break, Continue, Pass,
-    Function, ClassDef, With, WithItem, Return, Raise, Try, ExceptHandler,
+    Block, Function, ClassDef, With, WithItem, Return, Raise, Try, ExceptHandler,
     Name, Const, Undef, BinOp, BoolOp, UnaryNot, Call, Starred, KwargPairs, KwargExp,
     Compare, CompareChain, ListLit, TupleLit, DictLit, Subscript, Slice,
     Attribute, MethodCall, New
@@ -19,6 +16,9 @@ _MATH_EXPORTS = {
     "abs":   "py_math_abs",
 }
 
+def _is_boolean_expr(e: Expr) -> bool:
+    return isinstance(e, (Compare, CompareChain, UnaryNot))
+
 class Emitter:
     def __init__(self):
         self.lines: List[str] = []
@@ -27,7 +27,7 @@ class Emitter:
         self._scopes: List[set[str]] = [set()]
         self._break_flag_stack: List[str] = []
         self._self_stack: List[str] = []
-        self._base_stack: List[str] = []  # for super()
+        self._base_stack: List[str] = []
 
     def _tmp(self, prefix: str) -> str:
         self._tmp_counter += 1
@@ -45,17 +45,50 @@ class Emitter:
     def _declare(self, name: str) -> None:
         self._scopes[-1].add(name)
 
+    def _emit_condition(self, test: Expr) -> str:
+        js = self.emit_expr(test)
+        if _is_boolean_expr(test):
+            return js
+        return f"py_truth({js})"
+
     def emit_module(self, mod: Module) -> str:
         for s in mod.body:
             self.emit_stmt(s)
         return "\n".join(self.lines)
+
+    def _emit_method_body(self, func: "Function", skip_self: bool = True) -> None:
+        base_params_count = (len(func.params) - 1) if skip_self else len(func.params)
+        defaults_slice = func.defaults[1:] if skip_self else func.defaults
+        params_slice = func.params[1:] if skip_self else func.params
+
+        for idx, d in enumerate(defaults_slice):
+            if d is not None:
+                p = params_slice[idx]
+                expr_js = self.emit_expr(d)
+                self.writeln(f"if (arguments.length <= {idx} || {p} === undefined) {p} = {expr_js};")
+        if func.vararg:
+            if func.kwarg:
+                self.writeln(
+                    f"{func.vararg} = py_tuple_from_array("
+                    f"Array.prototype.slice.call(arguments, {base_params_count}, "
+                    f"Math.max({base_params_count}, arguments.length - 1)));"
+                )
+            else:
+                self.writeln(
+                    f"{func.vararg} = py_tuple_from_array("
+                    f"Array.prototype.slice.call(arguments, {base_params_count}));"
+                )
+        if func.kwarg:
+            kw_param = "__kwargs__" if skip_self else "__kwargs__"
+            self.writeln(f"let {func.kwarg} = ({kw_param} === undefined || {kw_param} === null) ? {{}} : {kw_param};")
+        for b in func.body:
+            self.emit_stmt(b)
 
     # -----------------------------
     # Statements
     # -----------------------------
     def emit_stmt(self, s: Stmt) -> None:
         if isinstance(s, ImportFrom):
-            # minimal import shim
             if s.module == "math":
                 for name in s.names:
                     target = _MATH_EXPORTS.get(name)
@@ -130,19 +163,41 @@ class Emitter:
             return
 
         if isinstance(s, If):
-            test_js = self.emit_expr(s.test)
-            self.writeln(f"if (py_truth({test_js})) {{")
+            cond_js = self._emit_condition(s.test)
+            self.writeln(f"if ({cond_js}) {{")
             self.indent += 1
             for b in s.body:
                 self.emit_stmt(b)
             self.indent -= 1
-            self.writeln("}")
             if s.orelse:
-                self.writeln("else {")
-                self.indent += 1
-                for o in s.orelse:
-                    self.emit_stmt(o)
-                self.indent -= 1
+                if len(s.orelse) == 1 and isinstance(s.orelse[0], If):
+                    elif_node = s.orelse[0]
+                    elif_cond = self._emit_condition(elif_node.test)
+                    self.writeln(f"}} else if ({elif_cond}) {{")
+                    self.indent += 1
+                    for b in elif_node.body:
+                        self.emit_stmt(b)
+                    self.indent -= 1
+                    if elif_node.orelse:
+                        if len(elif_node.orelse) == 1 and isinstance(elif_node.orelse[0], If):
+                            self._emit_elif_chain(elif_node.orelse[0])
+                        else:
+                            self.writeln("} else {")
+                            self.indent += 1
+                            for o in elif_node.orelse:
+                                self.emit_stmt(o)
+                            self.indent -= 1
+                            self.writeln("}")
+                    else:
+                        self.writeln("}")
+                else:
+                    self.writeln("} else {")
+                    self.indent += 1
+                    for o in s.orelse:
+                        self.emit_stmt(o)
+                    self.indent -= 1
+                    self.writeln("}")
+            else:
                 self.writeln("}")
             return
 
@@ -195,7 +250,7 @@ class Emitter:
                 self.indent += 1
                 self.writeln(f"let {brk_flag} = false;")
                 self._break_flag_stack.append(brk_flag)
-                self.writeln(f"while (py_truth({self.emit_expr(s.test)})) {{")
+                self.writeln(f"while ({self._emit_condition(s.test)}) {{")
                 self.indent += 1
                 for b in s.body:
                     self.emit_stmt(b)
@@ -211,7 +266,7 @@ class Emitter:
                 self.indent -= 1
                 self.writeln("}")
             else:
-                self.writeln(f"while (py_truth({self.emit_expr(s.test)})) {{")
+                self.writeln(f"while ({self._emit_condition(s.test)}) {{")
                 self.indent += 1
                 for b in s.body:
                     self.emit_stmt(b)
@@ -234,30 +289,15 @@ class Emitter:
             return
 
         if isinstance(s, Function):
-            # functions accept hidden trailing __kwargs__ (may be undefined)
             params = s.params + ([s.vararg] if s.vararg else [])
-            params_js = ", ".join(params + ["__kwargs__"])
+            if s.kwarg:
+                params_js = ", ".join(params + ["__kwargs__"])
+            else:
+                params_js = ", ".join(params)
             self.writeln(f"function {s.name}({params_js}) {{")
             self._scopes.append(set())
             self.indent += 1
-            base_params_count = len(s.params)
-            # defaults
-            for idx, (p, d) in enumerate(zip(s.params, s.defaults)):
-                if d is not None:
-                    expr_js = self.emit_expr(d)
-                    self.writeln(f"if (arguments.length <= {idx} || {p} === undefined) {p} = {expr_js};")
-            # *args to tuple (exclude hidden __kwargs__)
-            if s.vararg:
-                self.writeln(
-                    f"{s.vararg} = py_tuple_from_array("
-                    f"Array.prototype.slice.call(arguments, {base_params_count}, "
-                    f"Math.max({base_params_count}, arguments.length - 1)));"
-                )
-            # **kwargs binding
-            if s.kwarg:
-                self.writeln(f"let {s.kwarg} = (__kwargs__ === undefined || __kwargs__ === null) ? {{}} : __kwargs__;")
-            for b in s.body:
-                self.emit_stmt(b)
+            self._emit_method_body(s, skip_self=False)
             self.indent -= 1
             self.writeln("}")
             self._scopes.pop()
@@ -274,26 +314,14 @@ class Emitter:
 
             init = next((m for m in s.methods if m.name == "__init__"), None)
             if init:
-                params = ", ".join(init.params[1:] + ([init.vararg] if init.vararg else []) + ["__kwargs__"])
-                self.writeln(f"constructor({params}) " + "{")
+                ctor_params = init.params[1:] + ([init.vararg] if init.vararg else [])
+                if init.kwarg:
+                    ctor_params.append("__kwargs__")
+                self.writeln(f"constructor({', '.join(ctor_params)}) " + "{")
                 self.indent += 1
                 self._self_stack.append(init.params[0])
                 self._scopes.append(set())
-                base_params_count = len(init.params) - 1
-                for idx, d in enumerate(init.defaults[1:]):
-                    if d is not None:
-                        p = init.params[1 + idx]
-                        expr_js = self.emit_expr(d)
-                        self.writeln(f"if (arguments.length <= {idx} || {p} === undefined) {p} = {expr_js};")
-                if init.vararg:
-                    self.writeln(
-                        f"{init.vararg} = py_tuple_from_array("
-                        f"Array.prototype.slice.call(arguments, {base_params_count}, "
-                        f"Math.max({base_params_count}, arguments.length - 1)));"
-                    )
-                self.writeln(f"let __kwargs__ctor = __kwargs__;")
-                for b in init.body:
-                    self.emit_stmt(b)
+                self._emit_method_body(init, skip_self=True)
                 self._scopes.pop()
                 self._self_stack.pop()
                 self.indent -= 1
@@ -304,26 +332,14 @@ class Emitter:
             for m in s.methods:
                 if m.name == "__init__":
                     continue
-                params = ", ".join(m.params[1:] + ([m.vararg] if m.vararg else []) + ["__kwargs__"])
-                self.writeln(f"{m.name}({params}) " + "{")
+                meth_params = m.params[1:] + ([m.vararg] if m.vararg else [])
+                if m.kwarg:
+                    meth_params.append("__kwargs__")
+                self.writeln(f"{m.name}({', '.join(meth_params)}) " + "{")
                 self.indent += 1
                 self._self_stack.append(m.params[0])
                 self._scopes.append(set())
-                base_params_count = len(m.params) - 1
-                for idx, d in enumerate(m.defaults[1:]):
-                    if d is not None:
-                        p = m.params[1 + idx]
-                        expr_js = self.emit_expr(d)
-                        self.writeln(f"if (arguments.length <= {idx} || {p} === undefined) {p} = {expr_js};")
-                if m.vararg:
-                    self.writeln(
-                        f"{m.vararg} = py_tuple_from_array("
-                        f"Array.prototype.slice.call(arguments, {base_params_count}, "
-                        f"Math.max({base_params_count}, arguments.length - 1)));"
-                    )
-                self.writeln(f"let __kwargs__meth = __kwargs__;")
-                for b in m.body:
-                    self.emit_stmt(b)
+                self._emit_method_body(m, skip_self=True)
                 self._scopes.pop()
                 self._self_stack.pop()
                 self.indent -= 1
@@ -374,13 +390,12 @@ class Emitter:
                 self.writeln(f"py_raise({repr(s.exc_type)}, {self.emit_expr(s.message)});")
             return
 
-        if isinstance(s, Try):
-            # Inline synthetic blocks (used by lowering for unpack-to-attrs) to avoid block scoping issues.
-            if not s.handlers and not s.orelse and not s.finalbody:
-                for b in s.body:
-                    self.emit_stmt(b)
-                return
+        if isinstance(s, Block):
+            for b in s.body:
+                self.emit_stmt(b)
+            return
 
+        if isinstance(s, Try):
             ok = self._tmp("try_ok")
             caught = self._tmp("caught")
             err = self._tmp("err")
@@ -429,6 +444,26 @@ class Emitter:
             return
 
         raise NotImplementedError(f"Stmt not handled: {type(s).__name__}")
+
+    def _emit_elif_chain(self, node: If) -> None:
+        cond_js = self._emit_condition(node.test)
+        self.writeln(f"}} else if ({cond_js}) {{")
+        self.indent += 1
+        for b in node.body:
+            self.emit_stmt(b)
+        self.indent -= 1
+        if node.orelse:
+            if len(node.orelse) == 1 and isinstance(node.orelse[0], If):
+                self._emit_elif_chain(node.orelse[0])
+            else:
+                self.writeln("} else {")
+                self.indent += 1
+                for o in node.orelse:
+                    self.emit_stmt(o)
+                self.indent -= 1
+                self.writeln("}")
+        else:
+            self.writeln("}")
 
     # -----------------------------
     # Expressions
@@ -481,7 +516,6 @@ class Emitter:
                 lines.append(f"return {prev};")
             return f"(function(){{\n" + "\n".join(lines) + "\n})()"
 
-
         if isinstance(e, UnaryNot):
             return f"(!py_truth({self.emit_expr(e.value)}))"
 
@@ -500,13 +534,16 @@ class Emitter:
                     cond = f"py_eq({t_prev}, {t_cur})"
                 elif op == "!=":
                     cond = f"!py_eq({t_prev}, {t_cur})"
+                elif op == "is":
+                    cond = f"({t_prev} === {t_cur})"
+                elif op == "is not":
+                    cond = f"({t_prev} !== {t_cur})"
                 else:
                     cond = f"({t_prev} {op} {t_cur})"
                 lines.append(f"if (!{cond}) return false;")
                 t_prev = t_cur
             lines.append("return true;")
             return f"(function(){{\n" + "\n".join(lines) + "\n})()"
-
 
         if isinstance(e, Compare):
             if e.op == "in":
@@ -517,6 +554,10 @@ class Emitter:
                 return f"py_eq({self.emit_expr(e.left)}, {self.emit_expr(e.right)})"
             if e.op == "!=":
                 return f"!py_eq({self.emit_expr(e.left)}, {self.emit_expr(e.right)})"
+            if e.op == "is":
+                return f"({self.emit_expr(e.left)} === {self.emit_expr(e.right)})"
+            if e.op == "is not":
+                return f"({self.emit_expr(e.left)} !== {self.emit_expr(e.right)})"
             return f"({self.emit_expr(e.left)} {e.op} {self.emit_expr(e.right)})"
 
         if isinstance(e, ListLit):
@@ -544,7 +585,6 @@ class Emitter:
             return f"{self.emit_expr(e.value)}.{e.attr}"
 
         if isinstance(e, MethodCall):
-            # super() handling
             if isinstance(e.obj, Call) and e.obj.func == "super":
                 base = self._base_stack[-1] if self._base_stack else None
                 segs = []
@@ -591,7 +631,19 @@ class Emitter:
                 return f"py_len({self.emit_expr(e.args[0])})"
             if e.func == "__str__":
                 return f"py_str({self.emit_expr(e.args[0])})"
-            # string/list helpers
+            if e.func == "__sorted__":
+                return f"py_sorted({self.emit_expr(e.args[0])})"
+            if e.func == "__sum__":
+                return f"py_sum({self.emit_expr(e.args[0])})"
+            if e.func == "__min__":
+                args_js = ", ".join(self.emit_expr(a) for a in e.args)
+                return f"py_min({args_js})"
+            if e.func == "__max__":
+                args_js = ", ".join(self.emit_expr(a) for a in e.args)
+                return f"py_max({args_js})"
+            if e.func == "__zip__":
+                args_js = ", ".join(self.emit_expr(a) for a in e.args)
+                return f"py_zip({args_js})"
             if e.func == "__str_upper__":      return f"py_str_upper({self.emit_expr(e.args[0])})"
             if e.func == "__str_lower__":      return f"py_str_lower({self.emit_expr(e.args[0])})"
             if e.func == "__str_split__":
@@ -606,7 +658,6 @@ class Emitter:
             if e.func == "__list_append__":    return f"py_list_append({self.emit_expr(e.args[0])}, {self.emit_expr(e.args[1])})"
             if e.func == "__list_pop__":       return f"py_list_pop({self.emit_expr(e.args[0])})"
 
-            # generic call with * and ** handling
             parts_js = []
             kwargs_obj = self._tmp("kwargs")
             have_kwargs = False
@@ -626,7 +677,10 @@ class Emitter:
                     self.writeln(f"py_kwargs_merge({kwargs_obj}, {self.emit_expr(a.value)});")
                 else:
                     parts_js.append(self.emit_expr(a))
-            call_args_str = ", ".join(parts_js + ([kwargs_obj] if have_kwargs else ["undefined"]))
+            if have_kwargs:
+                call_args_str = ", ".join(parts_js + [kwargs_obj])
+            else:
+                call_args_str = ", ".join(parts_js)
             return f"{e.func}({call_args_str})"
 
         raise NotImplementedError(f"Expr not handled: {type(e).__name__}")

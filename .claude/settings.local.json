@@ -1,8 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(dir:*)",
-      "Bash(wc:*)"
+      "Bash(python -m pytest:*)",
+      "Bash(python tests/golden.py:*)",
+      "Bash(python -m py2js.cli:*)",
+      "Bash(node:*)"
     ]
   }
 }

@@ -242,6 +242,53 @@ __reg("py_math_sqrt",  Math.sqrt);
 __reg("py_math_pow",   Math.pow);
 __reg("py_math_abs",   Math.abs);
 
+// ---- builtins: sorted, min, max, sum, zip ----
+__reg("py_sorted", function (iterable) {
+  const arr = py_to_array(iterable).slice();
+  arr.sort(function (a, b) {
+    if (typeof a === "number" && typeof b === "number") return a - b;
+    const sa = String(a), sb = String(b);
+    return sa < sb ? -1 : sa > sb ? 1 : 0;
+  });
+  return arr;
+});
+__reg("py_min", function () {
+  let items;
+  if (arguments.length === 1) items = py_to_array(arguments[0]);
+  else items = Array.prototype.slice.call(arguments);
+  if (items.length === 0) throw new PyError("ValueError", "min() arg is an empty sequence");
+  let best = items[0];
+  for (let i = 1; i < items.length; i++) if (items[i] < best) best = items[i];
+  return best;
+});
+__reg("py_max", function () {
+  let items;
+  if (arguments.length === 1) items = py_to_array(arguments[0]);
+  else items = Array.prototype.slice.call(arguments);
+  if (items.length === 0) throw new PyError("ValueError", "max() arg is an empty sequence");
+  let best = items[0];
+  for (let i = 1; i < items.length; i++) if (items[i] > best) best = items[i];
+  return best;
+});
+__reg("py_sum", function (iterable) {
+  const arr = py_to_array(iterable);
+  let total = 0;
+  for (let i = 0; i < arr.length; i++) total += arr[i];
+  return total;
+});
+__reg("py_zip", function () {
+  const iters = [];
+  for (let i = 0; i < arguments.length; i++) iters.push(py_to_array(arguments[i]));
+  const minLen = iters.length === 0 ? 0 : Math.min.apply(null, iters.map(function(a){ return a.length; }));
+  const out = [];
+  for (let i = 0; i < minLen; i++) {
+    const row = [];
+    for (let j = 0; j < iters.length; j++) row.push(iters[j][i]);
+    out.push(py_tuple_from_array(row));
+  }
+  return out;
+});
+
 // ---- stringify & print (with __repr__ support) ----
 __reg("py_str", function (x) {
   if (x instanceof PyError) return x.pyType + ": " + (x.message || "");

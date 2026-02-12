@@ -1,21 +1,15 @@
-# run_demos.ps1 (fixed normalization)
-
 $ErrorActionPreference = "Stop"
 $examplesDir = Join-Path $PSScriptRoot "examples"
 $outFile = Join-Path $PSScriptRoot "out.js"
 
 function Normalize([string]$s) {
   if ($null -eq $s) { return "" }
-  # Normalize newlines to \n
   $s = $s -replace "`r`n", "`n" -replace "`r", "`n"
-  # Split into lines, trim trailing whitespace from each line, then re-join
   $lines = $s -split "`n" | ForEach-Object { $_.TrimEnd() }
-  # Trim leading/trailing blank lines caused by here-strings or runtime
   $joined = ($lines -join "`n").Trim()
   return $joined
 }
 
-# Expected outputs
 $expected = @{
   "hello.py" = @"
 ok 2
@@ -206,17 +200,13 @@ foreach ($ex in $examples) {
   Write-Host "`n==== $ex ====" -ForegroundColor Cyan
   $src = Join-Path $examplesDir $ex
 
-  # Transpile
   python -m py2js.cli $src -o $outFile | Out-Null
 
-  # Run (capture as single string)
   $raw = & node $outFile 2>&1
   if ($raw -is [Array]) { $raw = ($raw -join "`n") }
 
-  # Show runtime output exactly as produced
   Write-Output $raw
 
-  # Compare normalized, trimmed content
   $got = Normalize $raw
   if ($expected.ContainsKey($ex)) {
     $exp = Normalize $expected[$ex]

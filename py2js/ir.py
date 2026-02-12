@@ -1,5 +1,3 @@
-# flake8: noqa
-
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -62,6 +60,10 @@ class While(Stmt):
 class Break(Stmt): ...
 class Continue(Stmt): ...
 class Pass(Stmt): ...
+
+@dataclass
+class Block(Stmt):
+    body: List[Stmt]
 
 @dataclass
 class Function(Stmt):
